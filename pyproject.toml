@@ -1,0 +1,17 @@
+[project]
+name = "detection"
+version = "0.1.0"
+description = "No comment"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.2.3",
+    "opencv-python>=4.11.0.86",
+    "inference-sdk",
+    "ultralytics>=8.3.23",
+    "supervision>=0.25.1",
+]
+
+[[tool.mypy.overrides]]
+module = ['inference_sdk','ultralytics']
+ignore_missing_imports = true
