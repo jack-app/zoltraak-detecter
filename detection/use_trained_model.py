@@ -1,6 +1,7 @@
 import os
 from ultralytics import YOLO
 import cv2
+import numpy as np
 
 def load_yolo_model(model_path: str):
 	"""YOLOモデルの読み込み"""
@@ -20,37 +21,51 @@ def save_image(img, output_path: str):
 def predict_yolo(model, image_path: str, conf_threshold: float = 0.1):
 	"""YOLOモデルで画像に対して予測を実施する"""
 	results = model.predict(image_path, save=False, conf=conf_threshold)
-	# 複数画像の場合は、結果リストの先頭要素を使用（画像が1枚の場合）
 	return results[0]
 
-def draw_center_points(img, result):
-	"""YOLOの予測結果から、各バウンディングボックスの中心座標に円を描画する"""
-	"""信頼度が最も高いバウンディングボックスの中心にのみ円を描画"""
+def draw_center_points_top3(img, result):
+	"""
+	中心の色が赤に近い上位3つを選んだ後、
+	その中をconfidenceが高い順にソートして描画
+	"""
 	boxes = result.boxes
 	if len(boxes) == 0:
-		return img
+			return img
 
-	# 各ボックスの信頼度を取得（tensor → numpy）
-	confidences = boxes.conf.cpu().numpy().flatten()
-	# 最大信頼度のインデックス
-	top_idx = confidences.argmax()
+	# 信頼度取得
+	confidences = boxes.conf.cpu().numpy().flatten()  # (N,)
 
-	# 該当ボックスの座標を取得
-	x1, y1, x2, y2 = boxes.xyxy[top_idx].cpu().numpy()
-	# 中心座標計算
-	cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+	# 座標・中心点計算
+	xyxy = boxes.xyxy.cpu().numpy()  # (N,4)
+	centers = np.column_stack((
+			((xyxy[:,0] + xyxy[:,2]) / 2).astype(int),
+			((xyxy[:,1] + xyxy[:,3]) / 2).astype(int),
+	))  # (N,2)
 
-	# バウンディングボックスと中心点を描画
-	cv2.rectangle(img,
-				(int(x1), int(y1)),
-				(int(x2), int(y2)),
-				color=(0, 255, 0),
-				thickness=2)
-	cv2.circle(img,
-			(int(cx), int(cy)),
-			radius=5,
-			color=(0, 255, 255),
-			thickness=-1)
+	# 赤色との差分距離算出
+	red = np.array([0, 0, 255], dtype=float)
+	h, w = img.shape[:2]
+	distances = np.array([
+			np.linalg.norm(img[np.clip(cy,0,h-1), np.clip(cx,0,w-1)].astype(float) - red)
+			for cx, cy in centers
+	])
+
+	top_n = min(3, len(distances))
+	top_idxs = np.argsort(distances)[:top_n]
+
+	order = np.argsort(confidences[top_idxs])[::-1]
+	sorted_top_idxs = top_idxs[order]
+
+	# 描画色リスト (1位→緑, 2位→黄, 3位→赤)
+	draw_colors = [(0,255,0),(0,255,255),(255,0,0)]
+
+	for rank, idx in enumerate(sorted_top_idxs):
+			x1, y1, x2, y2 = xyxy[idx].astype(int)
+			cx, cy = centers[idx]
+			color = draw_colors[rank]
+			cv2.rectangle(img, (x1, y1), (x2, y2), color=color, thickness=2)
+			cv2.circle(img, (cx, cy), radius=5, color=color, thickness=-1)
+
 	return img
 
 def process_directory(model_path: str, input_dir: str, output_dir: str, conf_threshold: float = 0.1):
@@ -70,13 +85,9 @@ def process_directory(model_path: str, input_dir: str, output_dir: str, conf_thr
 		if filename.lower().endswith(valid_extensions):
 			input_path = os.path.join(input_dir, filename)
 			print(f"処理中: {input_path}")
-			# 画像に対する予測
 			result = predict_yolo(model, input_path, conf_threshold)
-			# 画像の読み込み
 			img = load_image(input_path)
-			# 予測結果から中心座標に円を描画
-			img = draw_center_points(img, result)
-			# 出力パスの作成
+			img = draw_center_points_top3(img, result)
 			output_path = os.path.join(output_dir, filename)
 			# 画像の保存
 			save_image(img, output_path)
@@ -86,7 +97,7 @@ def process_directory(model_path: str, input_dir: str, output_dir: str, conf_thr
 if __name__ == "__main__":
 	process_directory(
 		model_path='./assets/yolov8n.pt',
-		input_dir='./assets/images/input',                # 入力ディレクトリ
-		output_dir='./assets/images/output',          # 出力ディレクトリ
-		conf_threshold=0.3
+		input_dir='./assets/images/input',
+		output_dir='./assets/images/output',
+		conf_threshold=0.005
 	)
