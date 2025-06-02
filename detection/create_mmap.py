@@ -46,6 +46,9 @@ def load_color_mmap(mmap_path: str) -> tuple[int, int, int]:
     # ファイルが存在しない or サイズ不足の場合はデフォルト返却
     if not os.path.exists(mmap_path):
         create_empty_mmap(mmap_path, size=required_size)
+        with open(mmap_path, "wb") as f:
+            # write default_color to mmap
+            f.write(struct.pack("3d", *default_color))
         return default_color
     if os.path.getsize(mmap_path) < required_size:
         return default_color
