@@ -1,9 +1,17 @@
+import hashlib
 import mmap
 import os
 import struct
+import subprocess
+import time
+from typing import Dict, List, Tuple
+import re
 
 import cv2
 import numpy as np
+import objc
+import Quartz
+from AVFoundation import AVCaptureDevice, AVMediaTypeVideo
 from dotenv import load_dotenv
 from ultralytics import YOLO
 
@@ -161,24 +169,140 @@ def create_empty_mmap(mmap_path: str, size: int = 48):
     with open(mmap_path, "w+b") as f:
         f.write(b"\x00" * size)  # 48バイトのゼロで埋める
 
+def get_ffmpeg_camera_names() -> List[str]:
+    """ffmpeg を使って avfoundation カメラ名のリストを取得"""
+    result = subprocess.run(
+        ["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    output = result.stderr  # ffmpeg はデバイス一覧を stderr に出力
 
-# 例: メイン処理
+    camera_names = []
+    in_video_section = False
+    for line in output.splitlines():
+        # ビデオデバイスの開始地点
+        if "AVFoundation video devices:" in line:
+            in_video_section = True
+            continue
+        if "AVFoundation audio devices:" in line:
+            break
+        if in_video_section:
+            match = re.search(r'\[(\d+)\] (.+)', line)
+            if match:
+                print(line)
+                index = int(match.group(1))
+                name = match.group(2).strip()
+                camera_names.append(name)
+    return camera_names
+
+
+def list_available_cameras() -> List[Tuple[int, str]]:
+    """OpenCV で開けるカメラと，ffmpeg から取得した名前を対応付けて返す"""
+    camera_names = get_ffmpeg_camera_names()
+    available_cameras = []
+
+    for i in range(len(camera_names)):
+        cap = cv2.VideoCapture(i, cv2.CAP_AVFOUNDATION)
+        if cap.isOpened():
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = int(cap.get(cv2.CAP_PROP_FPS))
+            name = camera_names[i]
+            info = f"{name} ({width}x{height} @ {fps}fps)"
+            available_cameras.append((i, info))
+            cap.release()
+
+    return available_cameras
+
+
+def select_camera() -> int:
+    """利用可能なカメラの一覧を表示し、ユーザーに選択させる"""
+    available_cameras = list_available_cameras()
+    if not available_cameras:
+        raise RuntimeError("利用可能なカメラが見つかりません")
+
+    print("\n利用可能なカメラ:")
+    for idx, info in available_cameras:
+        print(f"カメラ {idx}: {info}")
+
+    while True:
+        try:
+            selection = int(input("\n使用するカメラのインデックスを入力してください: "))
+            if selection in [idx for idx, _ in available_cameras]:
+                return selection
+            print("無効なカメラインデックスです。もう一度入力してください。")
+        except ValueError:
+            print("数値を入力してください。")
+
+
+def capture_from_camera(camera_index: int) -> np.ndarray:
+    """指定されたカメラから画像を取得"""
+    cap = cv2.VideoCapture(camera_index)
+    if not cap.isOpened():
+        raise RuntimeError(f"カメラ {camera_index} を開けませんでした")
+
+    ret, frame = cap.read()
+    cap.release()
+
+    if not ret:
+        raise RuntimeError("カメラからの画像取得に失敗しました")
+
+    return frame
+
+
+def process_camera(
+    model_path: str,
+    mmap_path: str,
+    camera_index: int,
+    conf_threshold: float = 0.1,
+    target_bgr: tuple[int, int, int] = (0, 0, 255),
+    capture_interval: float = 1.0,
+):
+    """
+    指定のYOLOモデルを使い、カメラからの映像に対して予測を実施。
+    取得した中心点の候補点の中から、target_bgrの色に近い上位３件の中心座標を取得し、mmapに書き込む。
+
+    Args:
+        model_path: YOLOモデルのパス
+        mmap_path: 出力先のmmapファイルのパス
+        camera_index: 使用するカメラのインデックス
+        conf_threshold: 検出の信頼度閾値
+        target_bgr: 比較したい色を (B, G, R) で指定
+        capture_interval: カメラからの画像取得間隔（秒）
+    """
+    model = load_yolo_model(model_path)
+
+    try:
+        while True:
+            img = capture_from_camera(camera_index)
+            result = model.predict(img, save=False, conf=conf_threshold)[0]
+            centers = get_top3_centers_by_color(img, result, target_bgr)
+            print(f"検出された中心点: {centers}")
+            save_top3_to_mmap(centers, mmap_path)
+            time.sleep(capture_interval)
+    except KeyboardInterrupt:
+        print("\n処理を終了します")
+
+
+# メイン処理
 if __name__ == "__main__":
-    COLOR_MMAP_PATH = os.getenv(
-        "COLOR_MMAP_PATH", ""
-    )  # 杖の先端部の色を保存するmmapファイルの場所を指定します。
-    INPUT_IMAGE_PATH = os.getenv(
-        "INPUT_IMAGE_PATH", ""
-    )  # 入力する画像のパスを指定します。
-    POSITION_MMAP_PATH = os.getenv(
-        "POSITION_MMAP_PATH", ""
-    )  # 出力先のmmapファイルの場所を指定します。
+    COLOR_MMAP_PATH = os.getenv("COLOR_MMAP_PATH", "")
+    POSITION_MMAP_PATH = os.getenv("POSITION_MMAP_PATH", "")
+    CAMERA_CAPTURE_INTERVAL = float(os.getenv("CAMERA_CAPTURE_INTERVAL", "1.0"))
+
     target_bgr = load_color_mmap(mmap_path=COLOR_MMAP_PATH)
-    print(target_bgr)
-    process_directory(
-        model_path="./assets/yolov8n.pt",  # 使用するモデルです。
-        file_path=INPUT_IMAGE_PATH,
+    print(f"検出対象の色: {target_bgr}")
+
+    camera_index = select_camera()
+    print(f"カメラ {camera_index} を使用します")
+
+    process_camera(
+        model_path="./assets/yolov8n.pt",
         mmap_path=POSITION_MMAP_PATH,
+        camera_index=camera_index,
         conf_threshold=0.005,
         target_bgr=target_bgr,
+        capture_interval=CAMERA_CAPTURE_INTERVAL,
     )
