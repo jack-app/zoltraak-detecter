@@ -1,11 +1,11 @@
 import hashlib
 import mmap
 import os
+import re
 import struct
 import subprocess
 import time
 from typing import Dict, List, Tuple
-import re
 
 import cv2
 import numpy as np
@@ -169,6 +169,7 @@ def create_empty_mmap(mmap_path: str, size: int = 48):
     with open(mmap_path, "w+b") as f:
         f.write(b"\x00" * size)  # 48バイトのゼロで埋める
 
+
 def get_ffmpeg_camera_names() -> List[str]:
     """ffmpeg を使って avfoundation カメラ名のリストを取得"""
     result = subprocess.run(
@@ -189,7 +190,7 @@ def get_ffmpeg_camera_names() -> List[str]:
         if "AVFoundation audio devices:" in line:
             break
         if in_video_section:
-            match = re.search(r'\[(\d+)\] (.+)', line)
+            match = re.search(r"\[(\d+)\] (.+)", line)
             if match:
                 print(line)
                 index = int(match.group(1))
@@ -252,6 +253,38 @@ def capture_from_camera(camera_index: int) -> np.ndarray:
     return frame
 
 
+def draw_detection_results(
+    img: np.ndarray, centers: list[tuple[int, int]]
+) -> np.ndarray:
+    """
+    検出結果を画像上に描画する
+
+    Args:
+        img: 元画像
+        centers: 検出された中心点のリスト [(x1,y1), (x2,y2), (x3,y3)]
+    Returns:
+        描画済みの画像
+    """
+    result_img = img.copy()
+
+    # 各中心点に丸と順位を描画
+    for i, (x, y) in enumerate(centers, 1):
+        # 丸を描画
+        cv2.circle(result_img, (x, y), 20, (0, 255, 0), 2)
+        # 順位の数字を描画
+        cv2.putText(
+            result_img,
+            str(i),
+            (x - 5, y + 5),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2,
+        )
+
+    return result_img
+
+
 def process_camera(
     model_path: str,
     mmap_path: str,
@@ -273,17 +306,41 @@ def process_camera(
         capture_interval: カメラからの画像取得間隔（秒）
     """
     model = load_yolo_model(model_path)
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_AVFOUNDATION)
+
+    if not cap.isOpened():
+        raise RuntimeError(f"カメラ {camera_index} を開けませんでした")
 
     try:
         while True:
-            img = capture_from_camera(camera_index)
+            ret, img = cap.read()
+            if not ret:
+                print("カメラからの画像取得に失敗しました")
+                continue
+
             result = model.predict(img, save=False, conf=conf_threshold)[0]
             centers = get_top3_centers_by_color(img, result, target_bgr)
-            print(f"検出された中心点: {centers}")
+
+            # 検出結果を描画
+            result_img = draw_detection_results(img, centers)
+
+            # ウィンドウに表示
+            cv2.imshow("Detection Results", result_img)
+
+            # キー入力待ち（1ms）
+            key = cv2.waitKey(1)
+            if key == 27:  # ESCキーで終了
+                break
+
+            # 検出結果をmmapに保存
             save_top3_to_mmap(centers, mmap_path)
+
+            # 指定間隔待機
             time.sleep(capture_interval)
-    except KeyboardInterrupt:
-        print("\n処理を終了します")
+
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
 
 
 # メイン処理
