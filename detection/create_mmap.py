@@ -170,8 +170,25 @@ def create_empty_mmap(mmap_path: str, size: int = 48):
         f.write(b"\x00" * size)  # 48バイトのゼロで埋める
 
 
+def is_ffmpeg_available() -> bool:
+    """ffmpegが利用可能かどうかを判定"""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
 def get_ffmpeg_camera_names() -> List[str]:
     """ffmpeg を使って avfoundation カメラ名のリストを取得"""
+    if not is_ffmpeg_available():
+        return []
+
     result = subprocess.run(
         ["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
         stderr=subprocess.PIPE,
@@ -200,18 +217,23 @@ def get_ffmpeg_camera_names() -> List[str]:
 
 
 def list_available_cameras() -> List[Tuple[int, str]]:
-    """OpenCV で開けるカメラと，ffmpeg から取得した名前を対応付けて返す"""
+    """OpenCV で開けるカメラと，可能であればffmpegから取得した名前を対応付けて返す"""
     camera_names = get_ffmpeg_camera_names()
     available_cameras = []
 
-    for i in range(len(camera_names)):
+    for i in range(10):  # 最初の10個のカメラをチェック
         cap = cv2.VideoCapture(i, cv2.CAP_AVFOUNDATION)
         if cap.isOpened():
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             fps = int(cap.get(cv2.CAP_PROP_FPS))
-            name = camera_names[i]
-            info = f"{name} ({width}x{height} @ {fps}fps)"
+
+            if i < len(camera_names):
+                name = camera_names[i]
+                info = f"{name} ({width}x{height} @ {fps}fps)"
+            else:
+                info = f"Camera {i} ({width}x{height} @ {fps}fps)"
+
             available_cameras.append((i, info))
             cap.release()
 
