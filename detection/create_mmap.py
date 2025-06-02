@@ -37,6 +37,7 @@ def load_color_mmap(mmap_path: str) -> tuple[int, int, int]:
 
     # ファイルが存在しない or サイズ不足の場合はデフォルト返却
     if not os.path.exists(mmap_path):
+        create_empty_mmap(mmap_path, size=required_size)
         return default_color
     if os.path.getsize(mmap_path) < required_size:
         return default_color
@@ -68,8 +69,12 @@ def save_top3_to_mmap(centers: list[tuple[int, int]], mmap_path: str):
 
     data = struct.pack("6d", *flat)
 
+    mmap_size = 8 * 6  # 6つのdouble値を保存するためのサイズ
+    if not os.path.exists(mmap_path) or os.path.getsize(mmap_path) < mmap_size:
+        create_empty_mmap(mmap_path, size=mmap_size)
+
     with open(mmap_path, "r+b") as f:
-        with mmap.mmap(f.fileno(), length=8 * 6, access=mmap.ACCESS_WRITE) as mm:
+        with mmap.mmap(f.fileno(), length=mmap_size, access=mmap.ACCESS_WRITE) as mm:
             mm.seek(0)
             mm.write(data)
 
@@ -146,6 +151,15 @@ def process_directory(
     print(f"{centers}")
     save_top3_to_mmap(centers, mmap_path)
     print(f"検出結果画像を保存しました: {mmap_path}")
+
+
+def create_empty_mmap(mmap_path: str, size: int = 48):
+    """
+    指定されたパスに空のmmapファイルを作成します。
+    サイズはデフォルトで48バイト（6 * 8）です。
+    """
+    with open(mmap_path, "w+b") as f:
+        f.write(b"\x00" * size)  # 48バイトのゼロで埋める
 
 
 # 例: メイン処理
