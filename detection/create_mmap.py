@@ -315,7 +315,7 @@ def process_camera(
     mmap_path: str,
     camera_index: int,
     conf_threshold: float = 0.1,
-    target_bgr: tuple[int, int, int] = (0, 0, 255),
+    color_mmap_path: str = "",
     capture_interval: float = 1.0,
 ):
     """
@@ -332,6 +332,7 @@ def process_camera(
     """
     model = load_yolo_model(model_path)
     cap = cv2.VideoCapture(camera_index, cv2.CAP_AVFOUNDATION)
+    target_bgr = load_color_mmap(mmap_path=color_mmap_path)
 
     if not cap.isOpened():
         raise RuntimeError(f"カメラ {camera_index} を開けませんでした")
@@ -374,9 +375,6 @@ if __name__ == "__main__":
     POSITION_MMAP_PATH = os.getenv("POSITION_MMAP_PATH", "")
     CAMERA_CAPTURE_INTERVAL = float(os.getenv("CAMERA_CAPTURE_INTERVAL", "1.0"))
 
-    target_bgr = load_color_mmap(mmap_path=COLOR_MMAP_PATH)
-    print(f"検出対象の色: {target_bgr}")
-
     camera_index = select_camera()
     print(f"カメラ {camera_index} を使用します")
 
@@ -385,6 +383,6 @@ if __name__ == "__main__":
         mmap_path=POSITION_MMAP_PATH,
         camera_index=camera_index,
         conf_threshold=0.005,
-        target_bgr=target_bgr,
+        color_mmap_path=COLOR_MMAP_PATH,
         capture_interval=CAMERA_CAPTURE_INTERVAL,
     )
